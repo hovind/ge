@@ -43,24 +43,19 @@ enum Error {
     InvalidUnsignedWidth,
     InvalidSignedWidth,
     InvalidInputs,
-    InvalidOutputs,
     MissingImpl,
-    TypeError(String),
-    Impossible(std::convert::Infallible),
 }
 
-fn typ(t: &mut impl Tokens<Item = char>) -> Result<Type, Error> {
+fn typ(t: &mut impl Tokens<Item = char>) -> Result<Type, core::convert::Infallible> {
     t.take_while(|t| t.is_alphabetic())
         .parse::<String, String>()
         .map(Type)
-        .map_err(Error::Impossible)
 }
 
 fn pair(t: &mut impl Tokens<Item = char>) -> Result<(String, Bit), Error> {
-    let s = t
+    let Ok(s) = t
         .take_while(|c| c.is_alphabetic())
-        .parse::<String, String>()
-        .map_err(Error::Impossible)?;
+        .parse::<String, String>();
     t.skip_while(|c| c.is_ascii_whitespace());
     t.token(':');
     t.skip_while(|c| c.is_ascii_whitespace());
@@ -120,7 +115,7 @@ fn module(t: &mut impl Tokens<Item = char>) -> Result<Ast, Error> {
     }
 
     skip_whitespace(&mut *t);
-    let typ = typ(&mut *t)?;
+    let Ok(typ) = typ(&mut *t);
     let inputs = inputs(&mut *t)?;
     t.skip_while(|c| c.is_ascii_whitespace());
     t.tokens("->".chars());
