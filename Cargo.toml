@@ -1,0 +1,8 @@
+[package]
+name = "ge"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.2", features = ["derive"] }
+yap = { version = "0.12.0" }

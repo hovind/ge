@@ -1,0 +1,3 @@
+impl Add(x: u64, y: u64) -> u64 {
+    __builtin("add", x, y)
+}
