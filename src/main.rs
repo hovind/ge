@@ -33,8 +33,16 @@ struct Outputs(std::vec::Vec<Bit>);
 struct Type(String);
 
 #[derive(PartialEq, Debug)]
+enum Expression {
+    Builtin(String, std::vec::Vec<String>),
+}
+
+#[derive(PartialEq, Debug)]
+struct Body(std::vec::Vec<Expression>);
+
+#[derive(PartialEq, Debug)]
 enum Ast {
-    Module(Type, Inputs, Outputs),
+    Module(Type, Inputs, Outputs, Body),
 }
 
 #[derive(PartialEq, Debug)]
@@ -43,13 +51,13 @@ enum Error {
     InvalidUnsignedWidth,
     InvalidSignedWidth,
     InvalidInputs,
-    MissingImpl,
 }
 
-fn typ(t: &mut impl Tokens<Item = char>) -> Result<Type, core::convert::Infallible> {
-    t.take_while(|t| t.is_alphabetic())
-        .parse::<String, String>()
-        .map(Type)
+fn alphastr(t: &mut impl Tokens<Item = char>) -> String {
+    let Ok(str) = t
+        .take_while(|t| t.is_alphabetic())
+        .parse::<String, String>();
+    str
 }
 
 fn pair(t: &mut impl Tokens<Item = char>) -> Result<(String, Bit), Error> {
@@ -67,8 +75,9 @@ fn inputs(t: &mut impl Tokens<Item = char>) -> Result<Inputs, Error> {
     if !t.token('(') {
         return Err(Error::InvalidInputs);
     }
-    let inputs: std::collections::HashMap<String, Bit> =
-        t.sep_by(|t| pair(t).ok(), |t| field_separator(t)).collect();
+    let inputs: std::collections::HashMap<String, Bit> = t
+        .sep_by(|t| pair(t).ok(), |t| field_separator(',', t))
+        .collect();
     t.token(')');
     Ok(Inputs(inputs))
 }
@@ -94,34 +103,85 @@ fn bit(t: &mut impl Tokens<Item = char>) -> Result<Bit, Error> {
 
 fn outputs(t: &mut impl Tokens<Item = char>) -> Result<Outputs, Error> {
     let singular = t.token('(');
-    let outputs: std::vec::Vec<Bit> = t.sep_by(|t| bit(t).ok(), |t| field_separator(t)).collect();
+    let outputs: std::vec::Vec<Bit> = t
+        .sep_by(|t| bit(t).ok(), |t| field_separator(',', t))
+        .collect();
     if singular {
         t.token(')');
     }
     Ok(Outputs(outputs))
 }
 
+fn expr_builtin(t: &mut impl Tokens<Item = char>) -> Option<Result<Expression, Error>> {
+    if !t.tokens("__builtin".chars()) {
+        return None;
+    }
+    Some(builtin(t))
+}
+
+fn builtin(t: &mut impl Tokens<Item = char>) -> Result<Expression, Error> {
+    t.token('(');
+    t.token('"');
+    let Ok(str) = t.take_while(|&c| c != '"').parse::<String, String>();
+    t.token('"');
+    field_separator(',', t);
+    let args: std::vec::Vec<String> = t
+        .sep_by(|t| Some(alphastr(t)), |t| field_separator(',', t))
+        .collect();
+
+    t.token(')');
+    Ok(Expression::Builtin(str, args))
+}
+
+fn body(t: &mut impl Tokens<Item = char>) -> Result<Body, Error> {
+    t.sep_by(|t| expr_builtin(t), |t| field_separator(';', t))
+        .collect::<Result<std::vec::Vec<Expression>, Error>>()
+        .map(Body)
+}
+
 fn skip_whitespace(t: &mut impl Tokens<Item = char>) {
     t.skip_while(|c| c.is_ascii_whitespace());
 }
 
-fn field_separator(toks: &mut impl Tokens<Item = char>) -> bool {
-    toks.surrounded_by(|t| t.token(','), |t| skip_whitespace(t))
+fn field_separator(separator: char, toks: &mut impl Tokens<Item = char>) -> bool {
+    toks.surrounded_by(|t| t.token(separator), |t| skip_whitespace(t))
+}
+
+fn impl_module(t: &mut impl Tokens<Item = char>) -> Option<Result<Ast, Error>> {
+    if !t.tokens("impl".chars()) {
+        return None;
+    }
+    Some(module(t))
 }
 
 fn module(t: &mut impl Tokens<Item = char>) -> Result<Ast, Error> {
-    if !t.tokens("impl".chars()) {
-        return Err(Error::MissingImpl);
-    }
-
-    skip_whitespace(&mut *t);
-    let Ok(typ) = typ(&mut *t);
-    let inputs = inputs(&mut *t)?;
+    skip_whitespace(t);
+    let typ = Type(alphastr(t));
+    let inputs = inputs(t)?;
     t.skip_while(|c| c.is_ascii_whitespace());
     t.tokens("->".chars());
     t.skip_while(|c| c.is_ascii_whitespace());
     let outputs = outputs(t)?;
-    Ok(Ast::Module(typ, inputs, outputs))
+    t.skip_while(|c| c.is_ascii_whitespace());
+    t.token('{');
+    t.skip_while(|c| c.is_ascii_whitespace());
+    let body = body(t)?;
+    t.skip_while(|c| c.is_ascii_whitespace());
+    t.token('}');
+    Ok(Ast::Module(typ, inputs, outputs, body))
+}
+
+fn parse(str: &str) -> Result<std::vec::Vec<Ast>, Error> {
+    str.into_tokens()
+        .sep_by(
+            |t| impl_module(t),
+            |t| t.skip_while(|c| c.is_ascii_whitespace()) != 0usize,
+        )
+        .collect::<Result<std::vec::Vec<Ast>, Error>>()
+}
+
+fn emit(node: &Ast) {
+    println!("{:?}", node);
 }
 
 fn compile<R>(mut r: R) -> io::Result<()>
@@ -132,10 +192,10 @@ where
     r.read_to_end(&mut buf)?;
     let buf = unsafe { String::from_utf8_unchecked(buf) };
 
-    let mut tokens = buf.as_str().into_tokens();
-    let module = module(&mut tokens).map_err(|s| io::Error::other(format!("{:?}", s)))?;
-    println!("{:?}", module);
-    println!("{}", tokens.remaining());
+    let ast = parse(buf.as_str()).map_err(|s| io::Error::other(format!("{:?}", s)))?;
+    for module in ast {
+        emit(&module);
+    }
 
     Ok(())
 }
