@@ -1,4 +1,12 @@
 use clap::Parser;
+use melior::{
+    ir::{
+        attribute::{StringAttribute, TypeAttribute},
+        operation::OperationBuilder,
+        *,
+    },
+    Context,
+};
 use std::fs::File;
 use std::io;
 use yap::{IntoTokens, Tokens};
@@ -180,8 +188,13 @@ fn parse(str: &str) -> Result<std::vec::Vec<Ast>, Error> {
         .collect::<Result<std::vec::Vec<Ast>, Error>>()
 }
 
-fn emit(node: &Ast) {
-    println!("{:?}", node);
+fn emit<'c>(context: &'c Context, node: &Ast) -> Operation<'c> {
+    let Ast::Module(typ, inputs, outputs, body) = node;
+
+    let location = Location::unknown(&context);
+    OperationBuilder::new("hw.module", location)
+        .build()
+        .expect("valid hw.module")
 }
 
 fn compile<R>(mut r: R) -> io::Result<()>
@@ -193,9 +206,14 @@ where
     let buf = unsafe { String::from_utf8_unchecked(buf) };
 
     let ast = parse(buf.as_str()).map_err(|s| io::Error::other(format!("{:?}", s)))?;
-    for module in ast {
-        emit(&module);
+
+    let context = Context::new();
+    let location = Location::unknown(&context);
+    let module = Module::new(location);
+    for node in ast {
+        module.body().append_operation(emit(&context, &node));
     }
+    println!("{}", module.as_operation());
 
     Ok(())
 }
