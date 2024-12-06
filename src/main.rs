@@ -3,10 +3,12 @@ use melior::{
     ir::{
         attribute::{StringAttribute, TypeAttribute},
         operation::{OperationBuilder, OperationPrintingFlags},
-        *,
+        r#type::IntegerType,
+        Type, *,
     },
     Context,
 };
+use std::convert::Into;
 use std::fs::File;
 use std::io;
 use yap::{IntoTokens, Tokens};
@@ -25,41 +27,50 @@ impl Add(x: u64, y: u64) -> u64 {
 ...connect(add(30))
 */
 
-#[derive(PartialEq, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Bit {
-    Unsigned(u64),
-    Signed(u64),
+    Unsigned(u32),
+    Signed(u32),
 }
 
-#[derive(PartialEq, Debug)]
+impl Bit {
+    fn width(self) -> u32 {
+        match self {
+            Bit::Unsigned(w) => w,
+            Bit::Signed(w) => w,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
 struct Inputs(std::collections::HashMap<String, Bit>);
 
-#[derive(PartialEq, Debug)]
+#[derive(Debug, PartialEq)]
 struct Outputs(std::vec::Vec<Bit>);
 
-#[derive(PartialEq, Debug)]
-struct Type(String);
+#[derive(Debug, PartialEq)]
+struct Name(String);
 
-impl Type {
+impl Name {
     fn as_str(&self) -> &str {
         &self.0
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(Debug, PartialEq)]
 enum Expression {
     Builtin(String, std::vec::Vec<String>),
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(Debug, PartialEq)]
 struct Body(std::vec::Vec<Expression>);
 
-#[derive(PartialEq, Debug)]
+#[derive(Debug, PartialEq)]
 enum Ast {
-    Module(Type, Inputs, Outputs, Body),
+    Module(Name, Inputs, Outputs, Body),
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(Debug, PartialEq)]
 enum Error {
     InvalidBit,
     InvalidUnsignedWidth,
@@ -96,9 +107,9 @@ fn inputs(t: &mut impl Tokens<Item = char>) -> Result<Inputs, Error> {
     Ok(Inputs(inputs))
 }
 
-fn parse_digits(t: &mut impl Tokens<Item = char>) -> Result<u64, ()> {
+fn parse_digits(t: &mut impl Tokens<Item = char>) -> Result<u32, ()> {
     t.take_while(|c| c.is_digit(10))
-        .parse::<u64, String>()
+        .parse::<_, String>()
         .map_err(|_| ())
 }
 
@@ -170,7 +181,7 @@ fn impl_module(t: &mut impl Tokens<Item = char>) -> Option<Result<Ast, Error>> {
 
 fn module(t: &mut impl Tokens<Item = char>) -> Result<Ast, Error> {
     skip_whitespace(t);
-    let typ = Type(alphastr(t));
+    let typ = Name(alphastr(t));
     let inputs = inputs(t)?;
     t.skip_while(|c| c.is_ascii_whitespace());
     t.tokens("->".chars());
@@ -197,15 +208,24 @@ fn parse(str: &str) -> Result<std::vec::Vec<Ast>, Error> {
 fn emit<'c>(context: &'c Context, node: &Ast) -> Operation<'c> {
     let Ast::Module(typ, inputs, outputs, body) = node;
 
-    let arguments = Vec::<(Type, Location)>::with_capacity(inputs.0.len() + outputs.0.len());
-    for input in &inputs.0 {}
-    for output in &outputs.0 {}
+    let mut arguments = Vec::<(Type, Location)>::with_capacity(inputs.0.len() + outputs.0.len());
+    for (_, bit) in &inputs.0 {
+        arguments.push((
+            Type::from(IntegerType::new(&context, bit.width())),
+            Location::unknown(&context),
+        ));
+    }
+
+    let block = Block::new(&arguments);
+    let region = Region::new();
+    region.append_block(block);
 
     OperationBuilder::new("hw.module", Location::unknown(&context))
         .add_attributes(&[(
             Identifier::new(context, "sym_name"),
             StringAttribute::new(&context, typ.as_str()).into(),
         )])
+        .add_regions([region])
         .build()
         .expect("valid hw.module")
 }
