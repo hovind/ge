@@ -2,7 +2,7 @@ use clap::Parser;
 use melior::{
     ir::{
         attribute::{StringAttribute, TypeAttribute},
-        operation::OperationBuilder,
+        operation::{OperationBuilder, OperationPrintingFlags},
         *,
     },
     Context,
@@ -197,8 +197,11 @@ fn parse(str: &str) -> Result<std::vec::Vec<Ast>, Error> {
 fn emit<'c>(context: &'c Context, node: &Ast) -> Operation<'c> {
     let Ast::Module(typ, inputs, outputs, body) = node;
 
-    let location = Location::unknown(&context);
-    OperationBuilder::new("hw.module", location)
+    let arguments = Vec::<(Type, Location)>::with_capacity(inputs.0.len() + outputs.0.len());
+    for input in &inputs.0 {}
+    for output in &outputs.0 {}
+
+    OperationBuilder::new("hw.module", Location::unknown(&context))
         .add_attributes(&[(
             Identifier::new(context, "sym_name"),
             StringAttribute::new(&context, typ.as_str()).into(),
@@ -215,15 +218,22 @@ where
     r.read_to_end(&mut buf)?;
     let buf = unsafe { String::from_utf8_unchecked(buf) };
 
-    let ast = parse(buf.as_str()).map_err(|s| io::Error::other(format!("{:?}", s)))?;
+    let ast = parse(buf.as_str()).map_err(|e| io::Error::other(format!("{:?}", e)))?;
 
     let context = Context::new();
-    let location = Location::unknown(&context);
-    let module = Module::new(location);
+    context.set_allow_unregistered_dialects(true);
+
+    let module = Module::new(Location::unknown(&context));
     for node in ast {
         module.body().append_operation(emit(&context, &node));
     }
-    println!("{}", module.as_operation());
+
+    let flags = OperationPrintingFlags::default();
+    let text = module
+        .as_operation()
+        .to_string_with_flags(flags)
+        .map_err(|e| io::Error::other(format!("{}", e)))?;
+    println!("{}", text);
 
     Ok(())
 }
