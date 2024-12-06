@@ -40,6 +40,12 @@ struct Outputs(std::vec::Vec<Bit>);
 #[derive(PartialEq, Debug)]
 struct Type(String);
 
+impl Type {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(PartialEq, Debug)]
 enum Expression {
     Builtin(String, std::vec::Vec<String>),
@@ -193,6 +199,10 @@ fn emit<'c>(context: &'c Context, node: &Ast) -> Operation<'c> {
 
     let location = Location::unknown(&context);
     OperationBuilder::new("hw.module", location)
+        .add_attributes(&[(
+            Identifier::new(context, "sym_name"),
+            StringAttribute::new(&context, typ.as_str()).into(),
+        )])
         .build()
         .expect("valid hw.module")
 }
