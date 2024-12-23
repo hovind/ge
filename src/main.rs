@@ -215,9 +215,10 @@ fn parse(i: &mut str::Interner, str: &str) -> Result<std::vec::Vec<Ast>, Error> 
 }
 
 fn emit<'c>(context: &'c Context, i: &str::Interner, node: &Ast) -> Operation<'c> {
-    let Ast::Module(typ, inputs, outputs, body) = node;
+    let Ast::Module(typ, inputs, _outputs, body) = node;
+    let mut scope = scope::Ctx::<'c, '_, str::Id>::new();
 
-    let mut arguments = Vec::<(Type, Location)>::with_capacity(inputs.0.len() + outputs.0.len());
+    let mut arguments = Vec::<(Type, Location)>::with_capacity(inputs.0.len());
     for (_, bit) in &inputs.0 {
         arguments.push((
             Type::from(IntegerType::new(&context, bit.width())),
@@ -226,11 +227,16 @@ fn emit<'c>(context: &'c Context, i: &str::Interner, node: &Ast) -> Operation<'c
     }
 
     let block = Block::new(&arguments);
+    for (i, id) in inputs.0.keys().enumerate() {
+        let arg = block.argument(i).expect("valid block argument");
+        scope.insert(*id, arg.into());
+    }
+
     for Expression::Builtin(name, args) in &body.0 {
         let mut operands = Vec::<Value<'c, '_>>::new();
-        for (i, _arg) in args.iter().enumerate() {
-            let tmp = block.argument(i).expect("valid block argument");
-            operands.push(tmp.into());
+        for id in args.iter() {
+            let arg = scope.get(*id).expect("failed to resolve identifier");
+            operands.push(arg);
         }
         let op = OperationBuilder::new(i.lookup(*name), Location::unknown(&context))
             .add_operands(&operands)
@@ -271,7 +277,6 @@ where
     let buf = unsafe { String::from_utf8_unchecked(buf) };
 
     let mut interner = str::Interner::new();
-    let scope = scope::Ctx::<str::Id>::new();
     let ast =
         parse(&mut interner, buf.as_str()).map_err(|e| io::Error::other(format!("{:?}", e)))?;
 
