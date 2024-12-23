@@ -1,17 +1,22 @@
 use clap::Parser;
 use melior::{
     ir::{
-        attribute::{StringAttribute, TypeAttribute},
+        attribute::{ArrayAttribute, StringAttribute, TypeAttribute},
         operation::{OperationBuilder, OperationPrintingFlags},
         r#type::IntegerType,
         Type, *,
     },
     Context,
 };
+use std::collections::HashMap;
 use std::convert::Into;
 use std::fs::File;
 use std::io;
+use std::vec::Vec;
 use yap::{IntoTokens, Tokens};
+
+pub mod scope;
+pub mod str;
 
 #[derive(Parser, Debug)]
 #[clap(version)]
@@ -43,23 +48,17 @@ impl Bit {
 }
 
 #[derive(Debug, PartialEq)]
-struct Inputs(std::collections::HashMap<String, Bit>);
+struct Inputs(HashMap<str::Id, Bit>);
 
 #[derive(Debug, PartialEq)]
 struct Outputs(std::vec::Vec<Bit>);
 
 #[derive(Debug, PartialEq)]
-struct Name(String);
-
-impl Name {
-    fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+struct Name(str::Id);
 
 #[derive(Debug, PartialEq)]
 enum Expression {
-    Builtin(String, std::vec::Vec<String>),
+    Builtin(str::Id, std::vec::Vec<str::Id>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -85,7 +84,7 @@ fn alphastr(t: &mut impl Tokens<Item = char>) -> String {
     str
 }
 
-fn pair(t: &mut impl Tokens<Item = char>) -> Result<(String, Bit), Error> {
+fn pair(i: &mut str::Interner, t: &mut impl Tokens<Item = char>) -> Result<(str::Id, Bit), Error> {
     let Ok(s) = t
         .take_while(|c| c.is_alphabetic())
         .parse::<String, String>();
@@ -93,15 +92,15 @@ fn pair(t: &mut impl Tokens<Item = char>) -> Result<(String, Bit), Error> {
     t.token(':');
     t.skip_while(|c| c.is_ascii_whitespace());
     let b = bit(&mut *t)?;
-    Ok((s, b))
+    Ok((i.intern(&s), b))
 }
 
-fn inputs(t: &mut impl Tokens<Item = char>) -> Result<Inputs, Error> {
+fn inputs(i: &mut str::Interner, t: &mut impl Tokens<Item = char>) -> Result<Inputs, Error> {
     if !t.token('(') {
         return Err(Error::InvalidInputs);
     }
-    let inputs: std::collections::HashMap<String, Bit> = t
-        .sep_by(|t| pair(t).ok(), |t| field_separator(',', t))
+    let inputs: HashMap<str::Id, Bit> = t
+        .sep_by(|t| pair(i, t).ok(), |t| field_separator(',', t))
         .collect();
     t.token(')');
     Ok(Inputs(inputs))
@@ -137,29 +136,36 @@ fn outputs(t: &mut impl Tokens<Item = char>) -> Result<Outputs, Error> {
     Ok(Outputs(outputs))
 }
 
-fn expr_builtin(t: &mut impl Tokens<Item = char>) -> Option<Result<Expression, Error>> {
+fn expr_builtin(
+    i: &mut str::Interner,
+    t: &mut impl Tokens<Item = char>,
+) -> Option<Result<Expression, Error>> {
     if !t.tokens("__builtin".chars()) {
         return None;
     }
-    Some(builtin(t))
+    Some(builtin(i, t))
 }
 
-fn builtin(t: &mut impl Tokens<Item = char>) -> Result<Expression, Error> {
+fn builtin(i: &mut str::Interner, t: &mut impl Tokens<Item = char>) -> Result<Expression, Error> {
     t.token('(');
     t.token('"');
     let Ok(str) = t.take_while(|&c| c != '"').parse::<String, String>();
+    let str = i.intern(&str);
     t.token('"');
     field_separator(',', t);
-    let args: std::vec::Vec<String> = t
-        .sep_by(|t| Some(alphastr(t)), |t| field_separator(',', t))
+    let args: std::vec::Vec<str::Id> = t
+        .sep_by(
+            |t| Some(i.intern(&alphastr(t))),
+            |t| field_separator(',', t),
+        )
         .collect();
 
     t.token(')');
     Ok(Expression::Builtin(str, args))
 }
 
-fn body(t: &mut impl Tokens<Item = char>) -> Result<Body, Error> {
-    t.sep_by(|t| expr_builtin(t), |t| field_separator(';', t))
+fn body(i: &mut str::Interner, t: &mut impl Tokens<Item = char>) -> Result<Body, Error> {
+    t.sep_by(|t| expr_builtin(i, t), |t| field_separator(';', t))
         .collect::<Result<std::vec::Vec<Expression>, Error>>()
         .map(Body)
 }
@@ -172,17 +178,20 @@ fn field_separator(separator: char, toks: &mut impl Tokens<Item = char>) -> bool
     toks.surrounded_by(|t| t.token(separator), |t| skip_whitespace(t))
 }
 
-fn impl_module(t: &mut impl Tokens<Item = char>) -> Option<Result<Ast, Error>> {
+fn impl_module(
+    i: &mut str::Interner,
+    t: &mut impl Tokens<Item = char>,
+) -> Option<Result<Ast, Error>> {
     if !t.tokens("impl".chars()) {
         return None;
     }
-    Some(module(t))
+    Some(module(i, t))
 }
 
-fn module(t: &mut impl Tokens<Item = char>) -> Result<Ast, Error> {
+fn module(i: &mut str::Interner, t: &mut impl Tokens<Item = char>) -> Result<Ast, Error> {
     skip_whitespace(t);
-    let typ = Name(alphastr(t));
-    let inputs = inputs(t)?;
+    let typ = Name(i.intern(&alphastr(t)));
+    let inputs = inputs(i, t)?;
     t.skip_while(|c| c.is_ascii_whitespace());
     t.tokens("->".chars());
     t.skip_while(|c| c.is_ascii_whitespace());
@@ -190,22 +199,22 @@ fn module(t: &mut impl Tokens<Item = char>) -> Result<Ast, Error> {
     t.skip_while(|c| c.is_ascii_whitespace());
     t.token('{');
     t.skip_while(|c| c.is_ascii_whitespace());
-    let body = body(t)?;
+    let body = body(i, t)?;
     t.skip_while(|c| c.is_ascii_whitespace());
     t.token('}');
     Ok(Ast::Module(typ, inputs, outputs, body))
 }
 
-fn parse(str: &str) -> Result<std::vec::Vec<Ast>, Error> {
+fn parse(i: &mut str::Interner, str: &str) -> Result<std::vec::Vec<Ast>, Error> {
     str.into_tokens()
         .sep_by(
-            |t| impl_module(t),
+            |t| impl_module(i, t),
             |t| t.skip_while(|c| c.is_ascii_whitespace()) != 0usize,
         )
         .collect::<Result<std::vec::Vec<Ast>, Error>>()
 }
 
-fn emit<'c>(context: &'c Context, node: &Ast) -> Operation<'c> {
+fn emit<'c>(context: &'c Context, i: &str::Interner, node: &Ast) -> Operation<'c> {
     let Ast::Module(typ, inputs, outputs, body) = node;
 
     let mut arguments = Vec::<(Type, Location)>::with_capacity(inputs.0.len() + outputs.0.len());
@@ -217,17 +226,40 @@ fn emit<'c>(context: &'c Context, node: &Ast) -> Operation<'c> {
     }
 
     let block = Block::new(&arguments);
+    for Expression::Builtin(name, args) in &body.0 {
+        let mut operands = Vec::<Value<'c, '_>>::new();
+        for (i, _arg) in args.iter().enumerate() {
+            let tmp = block.argument(i).expect("valid block argument");
+            operands.push(tmp.into());
+        }
+        let op = OperationBuilder::new(i.lookup(*name), Location::unknown(&context))
+            .add_operands(&operands)
+            .build()
+            .unwrap();
+        block.append_operation(op);
+    }
     let region = Region::new();
     region.append_block(block);
 
+    let module_type = Type::parse(&context, "!hw.modty<>").unwrap();
     OperationBuilder::new("hw.module", Location::unknown(&context))
-        .add_attributes(&[(
-            Identifier::new(context, "sym_name"),
-            StringAttribute::new(&context, typ.as_str()).into(),
-        )])
+        .add_attributes(&[
+            (
+                Identifier::new(context, "sym_name"),
+                StringAttribute::new(&context, i.lookup(typ.0)).into(),
+            ),
+            (
+                Identifier::new(context, "module_type"),
+                TypeAttribute::new(module_type).into(),
+            ),
+            (
+                Identifier::new(context, "parameters"),
+                ArrayAttribute::new(&context, &[]).into(),
+            ),
+        ])
         .add_regions([region])
         .build()
-        .expect("valid hw.module")
+        .unwrap()
 }
 
 fn compile<R>(mut r: R) -> io::Result<()>
@@ -238,14 +270,19 @@ where
     r.read_to_end(&mut buf)?;
     let buf = unsafe { String::from_utf8_unchecked(buf) };
 
-    let ast = parse(buf.as_str()).map_err(|e| io::Error::other(format!("{:?}", e)))?;
+    let mut interner = str::Interner::new();
+    let scope = scope::Ctx::<str::Id>::new();
+    let ast =
+        parse(&mut interner, buf.as_str()).map_err(|e| io::Error::other(format!("{:?}", e)))?;
 
     let context = Context::new();
     context.set_allow_unregistered_dialects(true);
 
     let module = Module::new(Location::unknown(&context));
     for node in ast {
-        module.body().append_operation(emit(&context, &node));
+        module
+            .body()
+            .append_operation(emit(&context, &interner, &node));
     }
 
     let flags = OperationPrintingFlags::default();
