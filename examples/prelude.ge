@@ -1,0 +1,159 @@
+#[builtin_type("iN")]
+impl Unsigned<const N: usize> {
+    #[builtin_fn("comb.add")]
+    fn add(self, other: Args) -> Unsigned<N+1>
+    where
+        Args: VarArgs<Unsigned<N>>;
+}
+
+type bool = Unsigned<1>;
+type u1   = Unsigned<1>;
+type u2   = Unsigned<2>;
+type u3   = Unsigned<3>;
+type u4   = Unsigned<4>;
+type u5   = Unsigned<5>;
+type u6   = Unsigned<6>;
+type u7   = Unsigned<7>;
+type u8   = Unsigned<8>;
+
+impl<const N: usize> Add(x: Unsigned<N>, y: Unsigned<N>) -> Unsigned<N+1> {
+    x.add(y)
+}
+
+struct Mux {}
+impl<A> Mux(sel: bool, yes: A, no: A) -> A {
+    if sel { yes } else { b }
+}
+
+
+mod array {
+    struct FMap<Mod, const N: usize> {
+        modules: [Mod; N],
+    }
+
+    impl FMap<Mod, A, B, const N: usize>(inputs: [A; N]) -> [B; N]
+    where
+        Mod: Module(A) -> B
+    {
+        const for (module, input) in self.modules.zip(inputs) {
+            module(input)
+        }
+    }
+}
+
+
+struct RTree<Mod, const N: usize, const M: usize> {
+    modules: [Mod; (N - 1) / (M - 1)],
+}
+
+
+impl RTree<Mod, A, const N: usize, const M: usize>(inputs: [A; N] -> B) where {
+    Mod: Module([A; M], A) -> A,
+    (N-1) % (M-1) == 0,
+{
+    const Width: usize = N / M;
+    const for i in 0..self.modules.size() {
+        const if i < Width {
+            inputs[i].connect(modules[i])
+        } else {
+            let index = index_fn(i, n, m); // TODO: Calculate index
+            self.modules[index..index+M].connect(modules[i])
+        }
+    }.last()
+}
+
+type BTree<Mod, const N: usize> = RTree<Mod, N, 2>;
+
+#[builtin_type("hw.array<NxT>")
+impl Array<T, N> {
+    const fn grouped<const M: usize>(self) -> [[T; M], N / M]
+    where
+        N % M == 0,
+    {
+        const for i in 0..(N / M) {
+            const for j in 0..M {
+                self[M*i + M]
+            }
+        }
+    }
+}
+
+enum Origin {
+    Left,
+    Right,
+}
+
+struct CountBit<const N: usize> {
+    all: bool,
+    count: Unsigned<N>,
+}
+
+impl DoCount<const N: usize, const dir: Direction>(left: PopCountCount<N>, right: PopCountCount<N>) -> PopCountCount<N + 1> {
+    CountBit {
+        all: left.all && right.all,
+        count: const match dir {
+            Origin::Left  => if left.all  { left.count.add(right.count) } else { left.count }
+            Origin::Right => if right.all { left.count.add(right.count) } else { right.count }
+        }
+        
+    }
+}
+
+impl Count<const N: usize, const dir: Direction> {
+    inner: DoCount<N, dir>,
+};
+
+impl Count<const N: usize, const dir: Direction, const wally: bool>(bits: Unsigned<N>) -> Unsigned<N.log2()> {
+    let counts = const for bit in bits.array() {
+        CountBit {
+            all: bit.eq(wally),
+            count: bit.eq(wally)
+        }
+    }
+    self.inner(counts).count
+}
+
+type CountZerosLeft<const N: usize, const dir: Direction, const bit: bool> = Count<N, Direction::Left, 0usize>;
+type CountZerosRight<const N: usize, const dir: Direction, const bit: bool> = Count<N, Direction::Right, 0usize>;
+type CountOnesLeft<const N: usize, const dir: Direction, const bit: bool> = Count<N, Direction::Left, 1usize>;
+type CountOnesRight<const N: usize, const dir: Direction, const bit: bool> = Count<N, Direction::Right, 1usize>;
+
+
+struct Backpressured<T, U> {
+    proposal: T,
+    acceptance: Valid<U>,
+}
+
+enum Handhake<T> {
+    Proposal(Backpressured<T, ()>)
+    Idle,
+}
+
+mod valid {
+    enum Valid<T> {
+        Invalid,
+        Valid(T),
+    }
+
+    struct FMap<Mod> {
+        inner: Mod,
+    }
+
+    impl AndThen<Mod, A, B>(input: Valid<A>) -> Valid<B>
+    where
+        Mod: Module(A) -> Valid<B>
+    {
+        match input {
+            Invalid => Invalid,
+            Valid(x) => self.inner(x)
+        }
+    }
+
+    impl New(input: A) -> Valid<A> {
+        Valid(input)
+    }
+
+    type FMap<Mod, A, B> = AndThen<Mod.Connect(New), A, B>(input: Valid<A>) -> Valid<B>
+    where
+        Mod: Module(A) -> B;
+}
