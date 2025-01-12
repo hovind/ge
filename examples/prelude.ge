@@ -31,11 +31,11 @@ mod array {
         modules: [Mod; N],
     }
 
-    impl FMap<Mod, A, B, const N: usize>(inputs: [A; N]) -> [B; N]
+    impl FMap<Mod, A, B, const N: usize>(srcs: [A; N]) -> (sinks: [B; N])
     where
         Mod: Module(A) -> B
     {
-        const for (module, input) in self.modules.zip(inputs) {
+        sinks = const for (module, input) in self.modules.zip(inputs) {
             module(input)
         }
     }
@@ -66,7 +66,7 @@ type BTree<Mod, const N: usize> = RTree<Mod, N, 2>;
 
 #[builtin_type("hw.array<NxT>")
 impl Array<T, N> {
-    const fn grouped<const M: usize>(self) -> [[T; M], N / M]
+    fn grouped<const M: usize>(self) -> [[T; M], N / M]
     where
         N % M == 0,
     {
@@ -95,7 +95,6 @@ impl DoCount<const N: usize, const dir: Direction>(left: PopCountCount<N>, right
             Origin::Left  => if left.all  { left.count.add(right.count) } else { left.count }
             Origin::Right => if right.all { left.count.add(right.count) } else { right.count }
         }
-        
     }
 }
 
@@ -121,39 +120,86 @@ type CountOnesRight<const N: usize, const dir: Direction, const bit: bool> = Cou
 
 struct Backpressured<T, U> {
     proposal: T,
-    acceptance: Valid<U>,
+    acceptance: Option<U>,
 }
 
-enum Handhake<T> {
+enum Handshake<T> {
     Proposal(Backpressured<T, ()>)
     Idle,
 }
 
+impl<T> Handshake {
+    fn reject(mut self) {
+        match self {
+            Proposal(backpressured) => {
+                backpressured.acceptable = None;
+            }
+        }
+    }
+}
+
 mod valid {
-    enum Valid<T> {
-        Invalid,
-        Valid(T),
+    enum Option<T> {
+        None,
+        Option(T),
     }
 
     struct FMap<Mod> {
         inner: Mod,
     }
 
-    impl AndThen<Mod, A, B>(input: Valid<A>) -> Valid<B>
+    impl AndThen<Mod, A, B>(input: Option<A>) -> Option<B>
     where
-        Mod: Module(A) -> Valid<B>
+        Mod: Module(A) -> Option<B>
     {
         match input {
-            Invalid => Invalid,
-            Valid(x) => self.inner(x)
+            None => None,
+            Option(x) => self.inner(x)
         }
     }
 
-    impl New(input: A) -> Valid<A> {
-        Valid(input)
+    impl New(input: A) -> Option<A> {
+        Some(input)
     }
 
-    type FMap<Mod, A, B> = AndThen<Mod.Connect(New), A, B>(input: Valid<A>) -> Valid<B>
+    type FMap<Mod, A, B> = AndThen<Mod.Connect(New), A, B>(input: Option<A>) -> Option<B>
     where
         Mod: Module(A) -> B;
+}
+
+struct IndexWhere<Mod, const N: usize> {
+    inner: FMap<Mod, N>,
+}
+
+impl<Mod, A, const N: usize> IndexWhere<N, Mod, A>(xs: [A; N]) -> Option<Unsigned<N.log2()>>
+    where
+        Mod: Module(A) -> bool
+    {
+        let mut x = None;
+        for (check, idx) in self.inner(xs).enumerate().rev() {
+            if check {
+                x = idx;
+            }
+        }
+        x
+    }
+}
+
+mod tilelink {
+    struct XBar<const N: usize, const IDS: [usize; N], const P: Parameters> {
+        index_where: IndexWhere<Identity, N>,
+    }
+
+    impl<const N: usize, const P: Parameters> XBar<N, P>(srcs: [Link<P>; N]) -> (sink: Link<P>) {
+        let eqs = for ID in IDS {
+            sink.id.eq(ID)
+        };
+        for src in srcs {
+            src.a.reject()
+            src.d = None
+        }
+        if let Some(idx) = self.index_where(eqs) {
+            self.srcs[idx].connect(sink)
+        }
+    }
 }
