@@ -5,5 +5,6 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.2", features = ["derive"] }
-melior = "0.18.1"
+melior = { version = "0.18.1", default-features = false, features = [ "ods-dialects" ] }
+circt-rs = { path = "../../circt-rs" }
 yap = { version = "0.12.0" }
