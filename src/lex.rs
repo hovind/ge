@@ -4,6 +4,8 @@ use std::io::{BufRead, Read};
 
 #[derive(Debug)]
 pub enum TokenKind {
+    BlockComment,
+    LineComment,
     Pound,
     OpenParen,
     CloseParen,
@@ -12,16 +14,33 @@ pub enum TokenKind {
     OpenBrace,
     CloseBrace,
     Ident(str::Id),
+    StringLiteral(str::Id),
+    NumericLiteral(usize),
     Literal,
     Lt,
     Gt,
     Eq,
     EqEq,
-    Colon,
+    And,
+    AndAnd,
+    Or,
+    OrOr,
     Plus,
     Minus,
+    Slash,
+    Star,
+    Percent,
+    Colon,
     Semi,
+    Point,
+    Comma,
     Fn,
+    Impl,
+    Const,
+    For,
+    If,
+    Else,
+    Where,
 }
 
 pub struct PeekReader<R: ?Sized> {
@@ -123,31 +142,82 @@ impl<'a, 'b, R: Read> Lexer<'a, 'b, R> {
     }
 
     fn emit(&mut self, kind: TokenKind) -> Option<TokenKind> {
+        self.inner.consume(1);
         Some(kind)
     }
 
-    fn identifier(&mut self) -> Option<TokenKind> {
-        let id = self
-            .inner
+    fn identifier(&mut self) -> TokenKind {
+        self.inner
             .take_while(|x| is_identifier(x))
-            .consume_with(|x| self.interner.intern_bytes(x));
-        Some(TokenKind::Ident(id))
+            .consume_with(|x| match x {
+                b"fn" => TokenKind::Fn,
+                b"impl" => TokenKind::Impl,
+                b"const" => TokenKind::Const,
+                b"for" => TokenKind::For,
+                b"if" => TokenKind::If,
+                b"else" => TokenKind::Else,
+                b"where" => TokenKind::Else,
+                _ => TokenKind::Ident({ self.interner.intern_bytes(x) }),
+            })
     }
 
-    fn literal(&self) -> Option<TokenKind> {
-        todo!()
+    fn number(&mut self) -> Option<TokenKind> {
+        self.inner.take_while(|x| is_numeric(x)).consume_with(|x| {
+            std::str::from_utf8(x)
+                .ok()
+                .and_then(|x| x.parse::<usize>().ok())
+                .map(TokenKind::NumericLiteral)
+        })
     }
 
-    fn slash(&self) -> Option<TokenKind> {
-        todo!()
+    fn string(&mut self) -> TokenKind {
+        // Skip leading '"'
+        self.inner.consume(1);
+        let literal = self
+            .inner
+            .take_while(|x| x != &b'"')
+            .consume_with(|x| TokenKind::StringLiteral(self.interner.intern_bytes(x)));
+        // Skip trailing '"'
+        self.inner.consume(1);
+        literal
     }
 
-    fn eqeq(&self) -> Option<TokenKind> {
-        todo!()
+    fn slash(&mut self) -> Option<TokenKind> {
+        self.inner.consume(1);
+        Some(match self.inner.peek_last().ok()? {
+            b'/' => {
+                self.inner.skip_while(|x| x != &b'\n');
+                self.inner.consume(1);
+                TokenKind::LineComment
+            }
+            // b'*' => {
+            //     self.inner.consume(1);
+            //     TokenKind::EqEq
+            // }
+            _ => TokenKind::Slash,
+        })
     }
 
-    fn andand(&self) -> Option<TokenKind> {
-        todo!()
+    fn eqeq(&mut self) -> Option<TokenKind> {
+        self.inner.consume(1);
+        Some(match self.inner.peek_last().ok()? {
+            b'=' => {
+                self.inner.consume(1);
+                TokenKind::EqEq
+            }
+            _ => TokenKind::Eq,
+        })
+    }
+
+    fn andand(&mut self) -> Option<TokenKind> {
+        self.inner.consume(1);
+        Some(match self.inner.peek_last().ok()? {
+            b'&' => {
+                self.inner.consume(1);
+                TokenKind::AndAnd
+            }
+            _ => TokenKind::And,
+        })
     }
 
     fn oror(&self) -> Option<TokenKind> {
@@ -160,7 +230,11 @@ fn is_whitespace(byte: &u8) -> bool {
 }
 
 fn is_identifier(byte: &u8) -> bool {
-    matches!(*byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9')
+    matches!(*byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
+}
+
+fn is_numeric(byte: &u8) -> bool {
+    matches!(*byte, b'0'..=b'9')
 }
 
 impl<'a, 'b, R> Iterator for Lexer<'a, 'b, R>
@@ -176,19 +250,30 @@ where
             b'=' => self.eqeq(),
             b'&' => self.andand(),
             b'|' => self.oror(),
+            b'*' => self.emit(TokenKind::Star),
+            b'%' => self.emit(TokenKind::Percent),
             b'-' => self.emit(TokenKind::Minus),
+            b'+' => self.emit(TokenKind::Plus),
             b':' => self.emit(TokenKind::Colon),
             b';' => self.emit(TokenKind::Semi),
             b'#' => self.emit(TokenKind::Pound),
+            b'.' => self.emit(TokenKind::Point),
+            b',' => self.emit(TokenKind::Comma),
             b'(' => self.emit(TokenKind::OpenParen),
             b')' => self.emit(TokenKind::CloseParen),
             b'[' => self.emit(TokenKind::OpenBracket),
             b']' => self.emit(TokenKind::CloseBracket),
             b'{' => self.emit(TokenKind::OpenBrace),
             b'}' => self.emit(TokenKind::CloseBrace),
-            b'a'..=b'z' | b'A'..=b'Z' => self.identifier(),
-            b'0'..=b'9' => self.literal(),
-            _ => None,
+            b'<' => self.emit(TokenKind::Lt),
+            b'>' => self.emit(TokenKind::Gt),
+            b'a'..=b'z' | b'A'..=b'Z' => {
+                let id = self.identifier();
+                Some(id)
+            }
+            b'0'..=b'9' => self.number(),
+            b'"' => Some(self.string()),
+            otherwise => None,
         }
     }
 }
@@ -320,17 +405,36 @@ mod tests {
     #[test]
     fn identifiers() {
         let mut interner = str::Interner::new();
-        let slice = b"  \r\n  xxxxxyyyyyy  asdasd a1337";
+        let slice = b"  \r\n  xxxxxyyyyyy  asdasd a1337 impl for const";
         let mut reader = PeekReader::with_capacity(4096, &slice[..]);
         let mut lexer = Lexer::new(&mut reader, &mut interner);
         let x = lexer.next();
         let y = lexer.next();
         let z = lexer.next();
+        let u = lexer.next();
+        let v = lexer.next();
+        let w = lexer.next();
         std::assert_matches::assert_matches!(x, Some(TokenKind::Ident(id)) if
             interner.lookup_bytes(id) == b"xxxxxyyyyyy");
         std::assert_matches::assert_matches!(y, Some(TokenKind::Ident(id)) if
             interner.lookup_bytes(id) == b"asdasd");
         std::assert_matches::assert_matches!(z, Some(TokenKind::Ident(id)) if
             interner.lookup_bytes(id) == b"a1337");
+        std::assert_matches::assert_matches!(u, Some(TokenKind::Impl));
+        std::assert_matches::assert_matches!(v, Some(TokenKind::For));
+        std::assert_matches::assert_matches!(w, Some(TokenKind::Const));
+    }
+
+    #[test]
+    fn prelude() -> std::io::Result<()> {
+        let file =
+            std::fs::File::open(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/prelude.ge"))?;
+        let mut interner = str::Interner::new();
+        let mut reader = PeekReader::with_capacity(4096, file);
+        let lexer = Lexer::new(&mut reader, &mut interner);
+        for token in lexer {
+            println!("{:?}", token);
+        }
+        Ok(())
     }
 }

@@ -110,13 +110,12 @@ impl Buffer {
     /// Read more bytes into the buffer without discarding any of its contents
     pub fn read_more(&mut self, mut reader: impl Read) -> io::Result<usize> {
         let mut buf = BorrowedBuf::from(&mut self.buf[self.pos..]);
-        let old_init = self.initialized - self.pos;
         unsafe {
-            buf.set_init(old_init);
+            buf.set_init(self.initialized - self.pos);
         }
         reader.read_buf(buf.unfilled())?;
         self.filled += buf.len();
-        self.initialized += buf.init_len() - old_init;
+        self.initialized += buf.init_len();
         Ok(buf.len())
     }
 
