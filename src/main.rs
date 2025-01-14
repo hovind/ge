@@ -1,3 +1,14 @@
+#![feature(
+    allocator_api,
+    ascii_char,
+    assert_matches,
+    core_io_borrowed_buf,
+    io_const_error,
+    let_chains,
+    maybe_uninit_slice,
+    read_buf
+)]
+
 use clap::Parser;
 use melior::{
     ir::{
@@ -15,6 +26,8 @@ use std::io;
 use std::vec::Vec;
 use yap::{IntoTokens, Tokens};
 
+pub mod buffer;
+pub mod lex;
 pub mod scope;
 pub mod str;
 
@@ -107,7 +120,7 @@ fn inputs(i: &mut str::Interner, t: &mut impl Tokens<Item = char>) -> Result<Inp
 }
 
 fn parse_digits(t: &mut impl Tokens<Item = char>) -> Result<u32, ()> {
-    t.take_while(|c| c.is_digit(10))
+    t.take_while(char::is_ascii_digit)
         .parse::<_, String>()
         .map_err(|_| ())
 }
@@ -219,10 +232,10 @@ fn emit<'c>(context: &'c Context, i: &str::Interner, node: &Ast) -> Operation<'c
     let mut scope = scope::Ctx::<'c, '_, str::Id>::new();
 
     let mut arguments = Vec::<(Type, Location)>::with_capacity(inputs.0.len());
-    for (_, bit) in &inputs.0 {
+    for bit in inputs.0.values() {
         arguments.push((
-            Type::from(IntegerType::new(&context, bit.width())),
-            Location::unknown(&context),
+            Type::from(IntegerType::new(context, bit.width())),
+            Location::unknown(context),
         ));
     }
 
@@ -238,7 +251,7 @@ fn emit<'c>(context: &'c Context, i: &str::Interner, node: &Ast) -> Operation<'c
             let arg = scope.get(*id).expect("failed to resolve identifier");
             operands.push(arg);
         }
-        let op = OperationBuilder::new(i.lookup(*name), Location::unknown(&context))
+        let op = OperationBuilder::new(i.lookup(*name), Location::unknown(context))
             .add_operands(&operands)
             .build()
             .unwrap();
@@ -247,12 +260,12 @@ fn emit<'c>(context: &'c Context, i: &str::Interner, node: &Ast) -> Operation<'c
     let region = Region::new();
     region.append_block(block);
 
-    let module_type = Type::parse(&context, "!hw.modty<>").unwrap();
-    OperationBuilder::new("hw.module", Location::unknown(&context))
+    let module_type = Type::parse(context, "!hw.modty<>").unwrap();
+    OperationBuilder::new("hw.module", Location::unknown(context))
         .add_attributes(&[
             (
                 Identifier::new(context, "sym_name"),
-                StringAttribute::new(&context, i.lookup(typ.0)).into(),
+                StringAttribute::new(context, i.lookup(typ.0)).into(),
             ),
             (
                 Identifier::new(context, "module_type"),
@@ -260,7 +273,7 @@ fn emit<'c>(context: &'c Context, i: &str::Interner, node: &Ast) -> Operation<'c
             ),
             (
                 Identifier::new(context, "parameters"),
-                ArrayAttribute::new(&context, &[]).into(),
+                ArrayAttribute::new(context, &[]).into(),
             ),
         ])
         .add_regions([region])

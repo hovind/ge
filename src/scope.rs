@@ -34,3 +34,12 @@ where
         self.vals.get(&(self.depth, key)).copied()
     }
 }
+
+impl<K> Default for Ctx<'_, '_, K>
+where
+    K: Ord,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
