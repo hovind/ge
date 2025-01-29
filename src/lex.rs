@@ -23,6 +23,8 @@ pub enum TokenKind {
     For,
     If,
     Else,
+    FatArrow,
+    LArrow,
     Lt,
     Gt,
     Eq,
@@ -65,6 +67,8 @@ impl TokenKind {
             TokenKind::For => "for",
             TokenKind::If => "if",
             TokenKind::Else => "else",
+            TokenKind::FatArrow => "=>",
+            TokenKind::LArrow => "->",
             TokenKind::Lt => "<",
             TokenKind::Gt => ">",
             TokenKind::Eq => "=",
@@ -87,37 +91,59 @@ impl TokenKind {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct Location {
+    pub row: u32,
+    pub col: u32,
+}
+
+impl Location {
+    fn new() -> Self {
+        Self { row: 1, col: 1 }
+    }
+}
+
+impl std::fmt::Display for Location {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({}, {})", self.row, self.col)
+    }
+}
+
+impl Location {
+    fn consume(&mut self, bytes: &[u8]) {
+        *self = bytes
+            .utf8_chunks()
+            .fold(*self, |loc: Location, chunk: std::str::Utf8Chunk<'_>| {
+                loc.consume_chunk(chunk)
+            });
+    }
+
+    fn consume_chunk(self, chunk: std::str::Utf8Chunk<'_>) -> Location {
+        chunk
+            .valid()
+            .chars()
+            .fold(self, |loc: Location, char: char| loc.consume_char(char))
+    }
+
+    fn consume_char(self, char: char) -> Location {
+        match char {
+            '\n' => Self {
+                row: self.row + 1,
+                col: 1,
+            },
+            _ => Self {
+                col: self.col + 1,
+                row: self.row,
+            },
+        }
+    }
+}
+
 pub struct PeekReader<R: ?Sized> {
     lookahead: usize,
+    location: Location,
     buf: buffer::Buffer,
     inner: R,
-}
-
-impl<R: ?Sized + Read> Read for PeekReader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        // If we don't have any buffered data and we're doing a massive read
-        // (larger than our internal buffer), bypass our internal buffer
-        // entirely.
-        if self.buf.pos() == self.buf.filled() && buf.len() >= self.buf.capacity() {
-            self.buf.discard_buffer();
-            return self.inner.read(buf);
-        }
-        let mut rem = self.fill_buf()?;
-        let nread = rem.read(buf)?;
-        self.buf.consume(nread);
-        Ok(nread)
-    }
-}
-
-impl<R: ?Sized + Read> BufRead for PeekReader<R> {
-    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-        self.buf.fill_buf(&mut self.inner)
-    }
-
-    fn consume(&mut self, amt: usize) {
-        self.buf.consume(amt);
-        self.lookahead = self.lookahead.saturating_sub(amt);
-    }
 }
 
 impl<R: Read> PeekReader<R>
@@ -126,21 +152,17 @@ where
 {
     pub fn with_capacity(capacity: usize, inner: R) -> Self {
         Self {
+            lookahead: 0usize,
+            location: Location::new(),
             inner: inner,
             buf: buffer::Buffer::with_capacity(capacity),
-            lookahead: 0usize,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Position {
-    pub row: u32,
-    pub col: u32,
-}
-
 impl<R: Read> PeekAhead for PeekReader<R> {
     type Item = u8;
+    type Location = Location;
 
     fn peek(&self) -> &[Self::Item] {
         &self.buf.buffer()[..self.lookahead()]
@@ -150,12 +172,17 @@ impl<R: Read> PeekAhead for PeekReader<R> {
         self.lookahead
     }
 
-    // type Location;
-    // fn consume(&mut self, amt: usize);
-    // fn location(&self) -> Self::Location;
-    // fn lookahead(&self) -> usize { self.peek().len() }
+    fn location(&self) -> Self::Location {
+        self.location
+    }
 
-    fn cont(&mut self, amt: usize) -> Result<(), PeekError> {
+    fn consume(&mut self, amt: usize) {
+        self.location.consume(&self.buf.buffer()[..amt]);
+        self.buf.consume(amt);
+        self.lookahead = self.lookahead.saturating_sub(amt);
+    }
+
+    fn advance(&mut self, amt: usize) -> Result<(), PeekError> {
         if self.buf.pos() + self.lookahead() + amt < self.buf.filled() {
             self.lookahead += amt;
             return Ok(());
@@ -191,8 +218,14 @@ impl<'a, 'b, R: Read> Lexer<'a, 'b, R> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct Token {
+    location: Location,
+    kind: TokenKind,
+}
+
 impl<'a, 'b, 'c, R: Read> IntoIterator for &'c mut Lexer<'a, 'b, R> {
-    type Item = TokenKind;
+    type Item = Token;
     type IntoIter = Tokens<'a, 'b, 'c, R>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -209,9 +242,9 @@ impl<'a, 'b, 'c, R: Read> Tokens<'a, 'b, 'c, R> {
         Self { inner: inner }
     }
 
-    fn emit(&mut self, kind: TokenKind) -> Option<TokenKind> {
+    fn emit(&mut self, kind: TokenKind) -> TokenKind {
         self.inner.inner.consume(1);
-        Some(kind)
+        kind
     }
 
     fn identifier(&mut self) -> TokenKind {
@@ -221,7 +254,7 @@ impl<'a, 'b, 'c, R: Read> Tokens<'a, 'b, 'c, R> {
             .consume_with(|x| match x {
                 b"fn" => TokenKind::Fn,
                 b"impl" => TokenKind::Impl,
-                b"where" => TokenKind::Else,
+                b"where" => TokenKind::Where,
                 b"let" => TokenKind::Let,
                 b"const" => TokenKind::Const,
                 b"for" => TokenKind::For,
@@ -272,12 +305,31 @@ impl<'a, 'b, 'c, R: Read> Tokens<'a, 'b, 'c, R> {
         })
     }
 
+    fn minus(&mut self) -> Option<TokenKind> {
+        self.inner.inner.consume(1);
+        Some(match self.inner.inner.peek_last().ok()? {
+            b'>' => {
+                self.inner.inner.consume(1);
+                TokenKind::LArrow
+            }
+            // b'*' => {
+            //     self.inner.consume(1);
+            //     TokenKind::EqEq
+            // }
+            _ => TokenKind::Minus,
+        })
+    }
+
     fn eqeq(&mut self) -> Option<TokenKind> {
         self.inner.inner.consume(1);
         Some(match self.inner.inner.peek_last().ok()? {
             b'=' => {
                 self.inner.inner.consume(1);
                 TokenKind::EqEq
+            }
+            b'>' => {
+                self.inner.inner.consume(1);
+                TokenKind::FatArrow
             }
             _ => TokenKind::Eq,
         })
@@ -315,17 +367,18 @@ impl<'a, 'b, 'c, R> Iterator for Tokens<'a, 'b, 'c, R>
 where
     R: Read,
 {
-    type Item = TokenKind;
+    type Item = Token;
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.inner.skip_while(|x| is_whitespace(x));
-        match self.inner.inner.peek_last().ok()? {
-            b'/' => self.slash(),
-            b'=' => self.eqeq(),
-            b'&' => self.andand(),
-            b'|' => self.oror(),
+        let location = self.inner.inner.location();
+        let kind = match self.inner.inner.peek_last().ok()? {
+            b'/' => self.slash()?,
+            b'=' => self.eqeq()?,
+            b'&' => self.andand()?,
+            b'|' => self.oror()?,
+            b'-' => self.minus()?,
             b'*' => self.emit(TokenKind::Star),
             b'%' => self.emit(TokenKind::Percent),
-            b'-' => self.emit(TokenKind::Minus),
             b'+' => self.emit(TokenKind::Plus),
             b':' => self.emit(TokenKind::Colon),
             b';' => self.emit(TokenKind::Semi),
@@ -340,14 +393,12 @@ where
             b'}' => self.emit(TokenKind::CloseBrace),
             b'<' => self.emit(TokenKind::Lt),
             b'>' => self.emit(TokenKind::Gt),
-            b'a'..=b'z' | b'A'..=b'Z' => {
-                let id = self.identifier();
-                Some(id)
-            }
-            b'0'..=b'9' => self.number(),
-            b'"' => Some(self.string()),
-            _ => None,
-        }
+            b'a'..=b'z' | b'A'..=b'Z' => self.identifier(),
+            b'0'..=b'9' => self.number()?,
+            b'"' => self.string(),
+            _ => return None,
+        };
+        Some(Token { location, kind })
     }
 }
 
@@ -364,14 +415,21 @@ impl From<std::io::Error> for PeekError {
     }
 }
 
-pub trait PeekAhead: Sized + BufRead {
+pub trait PeekAhead: Sized {
     type Item;
+    type Location;
 
     fn peek(&self) -> &[Self::Item];
 
-    fn lookahead(&self) -> usize;
+    fn advance(&mut self, amt: usize) -> Result<(), PeekError>;
 
-    fn cont(&mut self, amt: usize) -> Result<(), PeekError>;
+    fn consume(&mut self, amt: usize);
+
+    fn location(&self) -> Self::Location;
+
+    fn lookahead(&self) -> usize {
+        self.peek().len()
+    }
 
     fn take_while<F>(&mut self, f: F) -> TakeWhile<'_, Self, F>
     where
@@ -389,7 +447,7 @@ pub trait PeekAhead: Sized + BufRead {
 
     fn peek_next(&mut self, amt: usize) -> Result<&[Self::Item], PeekError> {
         if self.lookahead() < amt {
-            self.cont(amt - self.lookahead())?;
+            self.advance(amt - self.lookahead())?;
         }
         Ok(self.peek())
     }
@@ -424,7 +482,6 @@ where
 
     pub fn consume_with<G, U>(mut self, mut g: G) -> U
     where
-        T::Item: std::fmt::Debug,
         G: FnMut(&[T::Item]) -> U,
     {
         while let Some(_) = self.next() {}
@@ -438,7 +495,6 @@ where
 impl<'a, T, F> Iterator for TakeWhile<'a, T, F>
 where
     T: PeekAhead,
-    T::Item: std::fmt::Debug,
     F: FnMut(&T::Item) -> bool,
 {
     type Item = ();
@@ -489,15 +545,33 @@ mod tests {
         let u = tokens.next();
         let v = tokens.next();
         let w = tokens.next();
-        std::assert_matches::assert_matches!(x, Some(TokenKind::Ident(id)) if
+        std::assert_matches::assert_matches!(x, Some(Token { kind: TokenKind::Ident(id), .. }) if
             interner.lookup_bytes(id) == b"xxxxxyyyyyy");
-        std::assert_matches::assert_matches!(y, Some(TokenKind::Ident(id)) if
+        std::assert_matches::assert_matches!(y, Some(Token { kind: TokenKind::Ident(id), ..}) if
             interner.lookup_bytes(id) == b"asdasd");
-        std::assert_matches::assert_matches!(z, Some(TokenKind::Ident(id)) if
+        std::assert_matches::assert_matches!(z, Some(Token { kind: TokenKind::Ident(id), ..}) if
             interner.lookup_bytes(id) == b"a1337");
-        std::assert_matches::assert_matches!(u, Some(TokenKind::Impl));
-        std::assert_matches::assert_matches!(v, Some(TokenKind::For));
-        std::assert_matches::assert_matches!(w, Some(TokenKind::Const));
+        std::assert_matches::assert_matches!(
+            u,
+            Some(Token {
+                kind: TokenKind::Impl,
+                ..
+            })
+        );
+        std::assert_matches::assert_matches!(
+            v,
+            Some(Token {
+                kind: TokenKind::For,
+                ..
+            })
+        );
+        std::assert_matches::assert_matches!(
+            w,
+            Some(Token {
+                kind: TokenKind::Const,
+                ..
+            })
+        );
     }
 
     #[test]
@@ -507,9 +581,9 @@ mod tests {
         let mut interner = str::Interner::new();
         let mut reader = PeekReader::with_capacity(4096, file);
         let mut lexer = Lexer::new(&mut reader, &mut interner);
-        let tokens: Vec<TokenKind> = lexer.into_iter().collect();
-        for token in tokens {
-            println!("{}", token.render(&interner));
+        let mut tokens = lexer.into_iter();
+        while let Some(token) = tokens.next() {
+            println!("{:?}", token);
         }
         Ok(())
     }
