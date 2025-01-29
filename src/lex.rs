@@ -2,21 +2,27 @@ use crate::buffer;
 use crate::str;
 use std::io::{BufRead, Read};
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum TokenKind {
     BlockComment,
     LineComment,
-    Pound,
     OpenParen,
     CloseParen,
     OpenBracket,
     CloseBracket,
     OpenBrace,
     CloseBrace,
-    Ident(str::Id),
-    StringLiteral(str::Id),
     NumericLiteral(usize),
-    Literal,
+    StringLiteral(str::Id),
+    Ident(str::Id),
+    Fn,
+    Impl,
+    Where,
+    Let,
+    Const,
+    For,
+    If,
+    Else,
     Lt,
     Gt,
     Eq,
@@ -30,17 +36,55 @@ pub enum TokenKind {
     Slash,
     Star,
     Percent,
+    Pound,
     Colon,
     Semi,
     Point,
     Comma,
-    Fn,
-    Impl,
-    Const,
-    For,
-    If,
-    Else,
-    Where,
+}
+
+impl TokenKind {
+    fn render<'a>(self, interner: &'a str::Interner) -> &'a str {
+        match self {
+            TokenKind::BlockComment => "block comment",
+            TokenKind::LineComment => "line comment",
+            TokenKind::OpenParen => "(",
+            TokenKind::CloseParen => ")",
+            TokenKind::OpenBracket => "[",
+            TokenKind::CloseBracket => "]",
+            TokenKind::OpenBrace => "{",
+            TokenKind::CloseBrace => "}",
+            TokenKind::NumericLiteral(_) => "numeric literal",
+            TokenKind::StringLiteral(id) => interner.lookup(id),
+            TokenKind::Ident(id) => interner.lookup(id),
+            TokenKind::Fn => "fn",
+            TokenKind::Impl => "impl",
+            TokenKind::Where => "where",
+            TokenKind::Let => "let",
+            TokenKind::Const => "const",
+            TokenKind::For => "for",
+            TokenKind::If => "if",
+            TokenKind::Else => "else",
+            TokenKind::Lt => "<",
+            TokenKind::Gt => ">",
+            TokenKind::Eq => "=",
+            TokenKind::EqEq => "≡",
+            TokenKind::And => "&",
+            TokenKind::AndAnd => "∧",
+            TokenKind::Or => "|",
+            TokenKind::OrOr => "∨",
+            TokenKind::Plus => "+",
+            TokenKind::Minus => "-",
+            TokenKind::Star => "*",
+            TokenKind::Slash => "/",
+            TokenKind::Percent => "%",
+            TokenKind::Pound => "#",
+            TokenKind::Colon => ":",
+            TokenKind::Semi => ";",
+            TokenKind::Point => ".",
+            TokenKind::Comma => ",",
+        }
+    }
 }
 
 pub struct PeekReader<R: ?Sized> {
@@ -106,6 +150,11 @@ impl<R: Read> PeekAhead for PeekReader<R> {
         self.lookahead
     }
 
+    // type Location;
+    // fn consume(&mut self, amt: usize);
+    // fn location(&self) -> Self::Location;
+    // fn lookahead(&self) -> usize { self.peek().len() }
+
     fn cont(&mut self, amt: usize) -> Result<(), PeekError> {
         if self.buf.pos() + self.lookahead() + amt < self.buf.filled() {
             self.lookahead += amt;
@@ -140,54 +189,79 @@ impl<'a, 'b, R: Read> Lexer<'a, 'b, R> {
             interner: interner,
         }
     }
+}
+
+impl<'a, 'b, 'c, R: Read> IntoIterator for &'c mut Lexer<'a, 'b, R> {
+    type Item = TokenKind;
+    type IntoIter = Tokens<'a, 'b, 'c, R>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Tokens::new(self)
+    }
+}
+
+pub struct Tokens<'a, 'b, 'c, R> {
+    inner: &'c mut Lexer<'a, 'b, R>,
+}
+
+impl<'a, 'b, 'c, R: Read> Tokens<'a, 'b, 'c, R> {
+    fn new(inner: &'c mut Lexer<'a, 'b, R>) -> Self {
+        Self { inner: inner }
+    }
 
     fn emit(&mut self, kind: TokenKind) -> Option<TokenKind> {
-        self.inner.consume(1);
+        self.inner.inner.consume(1);
         Some(kind)
     }
 
     fn identifier(&mut self) -> TokenKind {
         self.inner
+            .inner
             .take_while(|x| is_identifier(x))
             .consume_with(|x| match x {
                 b"fn" => TokenKind::Fn,
                 b"impl" => TokenKind::Impl,
+                b"where" => TokenKind::Else,
+                b"let" => TokenKind::Let,
                 b"const" => TokenKind::Const,
                 b"for" => TokenKind::For,
                 b"if" => TokenKind::If,
                 b"else" => TokenKind::Else,
-                b"where" => TokenKind::Else,
-                _ => TokenKind::Ident({ self.interner.intern_bytes(x) }),
+                _ => TokenKind::Ident(self.inner.interner.intern_bytes(x)),
             })
     }
 
     fn number(&mut self) -> Option<TokenKind> {
-        self.inner.take_while(|x| is_numeric(x)).consume_with(|x| {
-            std::str::from_utf8(x)
-                .ok()
-                .and_then(|x| x.parse::<usize>().ok())
-                .map(TokenKind::NumericLiteral)
-        })
+        self.inner
+            .inner
+            .take_while(|x| is_numeric(x))
+            .consume_with(|x| {
+                std::str::from_utf8(x)
+                    .ok()
+                    .and_then(|x| x.parse::<usize>().ok())
+                    .map(TokenKind::NumericLiteral)
+            })
     }
 
     fn string(&mut self) -> TokenKind {
         // Skip leading '"'
-        self.inner.consume(1);
+        self.inner.inner.consume(1);
         let literal = self
             .inner
+            .inner
             .take_while(|x| x != &b'"')
-            .consume_with(|x| TokenKind::StringLiteral(self.interner.intern_bytes(x)));
+            .consume_with(|x| TokenKind::StringLiteral(self.inner.interner.intern_bytes(x)));
         // Skip trailing '"'
-        self.inner.consume(1);
+        self.inner.inner.consume(1);
         literal
     }
 
     fn slash(&mut self) -> Option<TokenKind> {
-        self.inner.consume(1);
-        Some(match self.inner.peek_last().ok()? {
+        self.inner.inner.consume(1);
+        Some(match self.inner.inner.peek_last().ok()? {
             b'/' => {
-                self.inner.skip_while(|x| x != &b'\n');
-                self.inner.consume(1);
+                self.inner.inner.skip_while(|x| x != &b'\n');
+                self.inner.inner.consume(1);
                 TokenKind::LineComment
             }
             // b'*' => {
@@ -199,10 +273,10 @@ impl<'a, 'b, R: Read> Lexer<'a, 'b, R> {
     }
 
     fn eqeq(&mut self) -> Option<TokenKind> {
-        self.inner.consume(1);
-        Some(match self.inner.peek_last().ok()? {
+        self.inner.inner.consume(1);
+        Some(match self.inner.inner.peek_last().ok()? {
             b'=' => {
-                self.inner.consume(1);
+                self.inner.inner.consume(1);
                 TokenKind::EqEq
             }
             _ => TokenKind::Eq,
@@ -210,10 +284,10 @@ impl<'a, 'b, R: Read> Lexer<'a, 'b, R> {
     }
 
     fn andand(&mut self) -> Option<TokenKind> {
-        self.inner.consume(1);
-        Some(match self.inner.peek_last().ok()? {
+        self.inner.inner.consume(1);
+        Some(match self.inner.inner.peek_last().ok()? {
             b'&' => {
-                self.inner.consume(1);
+                self.inner.inner.consume(1);
                 TokenKind::AndAnd
             }
             _ => TokenKind::And,
@@ -237,15 +311,14 @@ fn is_numeric(byte: &u8) -> bool {
     matches!(*byte, b'0'..=b'9')
 }
 
-impl<'a, 'b, R> Iterator for Lexer<'a, 'b, R>
+impl<'a, 'b, 'c, R> Iterator for Tokens<'a, 'b, 'c, R>
 where
     R: Read,
 {
     type Item = TokenKind;
     fn next(&mut self) -> Option<Self::Item> {
-        let inner = &mut self.inner;
-        inner.skip_while(|x| is_whitespace(x));
-        match inner.peek_last().ok()? {
+        self.inner.inner.skip_while(|x| is_whitespace(x));
+        match self.inner.inner.peek_last().ok()? {
             b'/' => self.slash(),
             b'=' => self.eqeq(),
             b'&' => self.andand(),
@@ -273,7 +346,7 @@ where
             }
             b'0'..=b'9' => self.number(),
             b'"' => Some(self.string()),
-            otherwise => None,
+            _ => None,
         }
     }
 }
@@ -407,13 +480,15 @@ mod tests {
         let mut interner = str::Interner::new();
         let slice = b"  \r\n  xxxxxyyyyyy  asdasd a1337 impl for const";
         let mut reader = PeekReader::with_capacity(4096, &slice[..]);
+
         let mut lexer = Lexer::new(&mut reader, &mut interner);
-        let x = lexer.next();
-        let y = lexer.next();
-        let z = lexer.next();
-        let u = lexer.next();
-        let v = lexer.next();
-        let w = lexer.next();
+        let mut tokens = lexer.into_iter();
+        let x = tokens.next();
+        let y = tokens.next();
+        let z = tokens.next();
+        let u = tokens.next();
+        let v = tokens.next();
+        let w = tokens.next();
         std::assert_matches::assert_matches!(x, Some(TokenKind::Ident(id)) if
             interner.lookup_bytes(id) == b"xxxxxyyyyyy");
         std::assert_matches::assert_matches!(y, Some(TokenKind::Ident(id)) if
@@ -431,9 +506,10 @@ mod tests {
             std::fs::File::open(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/prelude.ge"))?;
         let mut interner = str::Interner::new();
         let mut reader = PeekReader::with_capacity(4096, file);
-        let lexer = Lexer::new(&mut reader, &mut interner);
-        for token in lexer {
-            println!("{:?}", token);
+        let mut lexer = Lexer::new(&mut reader, &mut interner);
+        let tokens: Vec<TokenKind> = lexer.into_iter().collect();
+        for token in tokens {
+            println!("{}", token.render(&interner));
         }
         Ok(())
     }
